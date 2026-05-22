@@ -83,7 +83,6 @@ def read_victron_once(client: mqtt.Client) -> None:
                 continue
 
             line = line.strip()
-            print(line, flush=True)
 
             if not line.startswith("{"):
                 continue
