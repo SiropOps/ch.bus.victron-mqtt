@@ -1,1 +1,4 @@
 /.project
+.env
+*.env
+docker/mosquitto/config/passwords

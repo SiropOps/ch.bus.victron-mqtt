@@ -19,6 +19,7 @@ MQTT_PORT = int(env("MQTT_PORT", "1883"))
 MQTT_USERNAME = env("MQTT_USERNAME", "")
 MQTT_PASSWORD = env("MQTT_PASSWORD", "")
 MQTT_BASE_TOPIC = env("MQTT_BASE_TOPIC", "van/victron").rstrip("/")
+MQTT_STATUS_TOPIC = f"{MQTT_BASE_TOPIC}/status"
 READ_INTERVAL_SECONDS = int(env("READ_INTERVAL_SECONDS", "30"))
 VICTRON_NUM_READINGS = int(env("VICTRON_NUM_READINGS", "1"))
 
@@ -82,17 +83,37 @@ def read_victron_once(client: mqtt.Client) -> None:
             print(f"Invalid JSON ignored: {line}", flush=True)
 
 
+def on_connect(client: mqtt.Client, userdata, flags, reason_code, properties) -> None:
+    if reason_code == 0:
+        client.publish(MQTT_STATUS_TOPIC, "online", retain=True)
+        print(f"MQTT connected; published {MQTT_STATUS_TOPIC}=online", flush=True)
+    else:
+        print(f"MQTT connection failed: {reason_code}", flush=True)
+
+
+def connect_mqtt(client: mqtt.Client) -> None:
+    while True:
+        try:
+            client.connect(MQTT_HOST, MQTT_PORT, 60)
+            return
+        except Exception as exc:
+            print(f"ERROR: MQTT connect failed: {exc}", flush=True)
+            time.sleep(READ_INTERVAL_SECONDS)
+
+
 def main() -> None:
-    print("Starting Victron BLE → MQTT bridge", flush=True)
+    print("Starting Victron BLE -> MQTT bridge", flush=True)
     print(f"MQTT: {MQTT_HOST}:{MQTT_PORT}", flush=True)
     print(f"Topic base: {MQTT_BASE_TOPIC}", flush=True)
     print(f"Devices: {', '.join([d.split('@')[0] for d in VICTRON_DEVICES])}", flush=True)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.on_connect = on_connect
+    client.will_set(MQTT_STATUS_TOPIC, "offline", retain=True)
     if MQTT_USERNAME:
         client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
-    client.connect(MQTT_HOST, MQTT_PORT, 60)
+    connect_mqtt(client)
     client.loop_start()
 
     while True:

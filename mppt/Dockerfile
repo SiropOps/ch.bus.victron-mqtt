@@ -14,6 +14,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY victron_mqtt.py /app/victron_mqtt.py
+COPY app.py /app/app.py
 
-CMD ["python", "victron_mqtt.py"]
+CMD ["python", "app.py"]
