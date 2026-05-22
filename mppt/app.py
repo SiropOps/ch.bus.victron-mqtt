@@ -21,7 +21,6 @@ MQTT_PASSWORD = env("MQTT_PASSWORD", "")
 MQTT_BASE_TOPIC = env("MQTT_BASE_TOPIC", "van/victron").rstrip("/")
 MQTT_STATUS_TOPIC = f"{MQTT_BASE_TOPIC}/status"
 READ_INTERVAL_SECONDS = int(env("READ_INTERVAL_SECONDS", "30"))
-VICTRON_NUM_READINGS = int(env("VICTRON_NUM_READINGS", "1"))
 
 
 def topic_safe(value: str) -> str:
@@ -64,7 +63,7 @@ def read_victron_once(client: mqtt.Client) -> None:
     if not VICTRON_DEVICES:
         raise RuntimeError("VICTRON_DEVICES is empty. Example: E1:EA:0C:89:CC:C5@your_key")
 
-    cmd = ["victron-ble", "read", *VICTRON_DEVICES, "--num-readings", str(VICTRON_NUM_READINGS)]
+    cmd = ["victron-ble", "read", *VICTRON_DEVICES]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
 
     if result.stderr.strip():
