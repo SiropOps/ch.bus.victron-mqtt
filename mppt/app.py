@@ -64,22 +64,41 @@ def read_victron_once(client: mqtt.Client) -> None:
         raise RuntimeError("VICTRON_DEVICES is empty. Example: E1:EA:0C:89:CC:C5@your_key")
 
     cmd = ["victron-ble", "read", *VICTRON_DEVICES]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
 
-    if result.stderr.strip():
-        print(result.stderr.strip(), flush=True)
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
 
-    if result.returncode != 0:
-        raise RuntimeError(f"victron-ble failed with code {result.returncode}: {result.stderr}")
+    start = time.time()
 
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
+    try:
+        while time.time() - start < 60:
+            line = process.stdout.readline()
+
+            if not line:
+                continue
+
+            line = line.strip()
+            print(line, flush=True)
+
+            if not line.startswith("{"):
+                continue
+
             publish_device(client, json.loads(line))
-        except json.JSONDecodeError:
-            print(f"Invalid JSON ignored: {line}", flush=True)
+            return
+
+        raise TimeoutError("No Victron JSON received within 60 seconds")
+
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 
 def on_connect(client: mqtt.Client, userdata, flags, reason_code, properties) -> None:
