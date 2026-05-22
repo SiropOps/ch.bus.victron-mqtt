@@ -6,7 +6,14 @@ ENV API_PORT=8013
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        python3-dev \
+    && pip install --no-cache-dir -r /app/requirements.txt \
+    && apt-get purge -y --auto-remove build-essential python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app.py /app/app.py
 
