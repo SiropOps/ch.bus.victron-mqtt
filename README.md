@@ -138,6 +138,98 @@ van/victron/status
 
 Payloads are `online` and `offline`.
 
+## Victron Metrics API
+
+The MPPT bridge publishes Victron telemetry to MQTT. The lightweight API service subscribes to the full JSON MPPT topic and exposes the latest values over HTTP on port `8013`.
+
+This is useful for Inkplate, dashboards, scripts, or other devices that prefer HTTP JSON instead of MQTT.
+
+By default, the API subscribes to:
+
+```text
+van/victron-mppt/smartsolar_pyleas
+```
+
+It exposes:
+
+```text
+GET /api/health
+GET /api/metrics
+```
+
+Build the API image from the repository root:
+
+```sh
+docker build -t ch.bus.victron-mqtt/api:latest ./api
+```
+
+Run it on the same Raspberry Pi as Mosquitto using host networking:
+
+```sh
+docker run -d \
+  --restart=always \
+  --name victron-metrics-api \
+  --net=host \
+  -e MQTT_HOST="127.0.0.1" \
+  -e MQTT_PORT="1883" \
+  -e MQTT_USERNAME="victron" \
+  -e MQTT_PASSWORD="CHANGE_ME_MQTT_PASSWORD" \
+  -e MQTT_TOPIC="van/victron-mppt/smartsolar_pyleas" \
+  -e API_PORT="8013" \
+  ch.bus.victron-mqtt/api:latest
+```
+
+Check API logs:
+
+```sh
+docker logs -f victron-metrics-api
+```
+
+Test health:
+
+```sh
+curl http://127.0.0.1:8013/api/health
+```
+
+Expected health response:
+
+```json
+{
+  "status": "ok",
+  "mqtt_connected": true,
+  "last_message_timestamp": "2026-05-22T08:32:11.912940+00:00"
+}
+```
+
+Test metrics:
+
+```sh
+curl http://127.0.0.1:8013/api/metrics
+```
+
+Expected metrics response:
+
+```json
+{
+  "timestamp": "2026-05-22T08:32:11.912940+00:00",
+  "battery_charging_current": 0.6,
+  "battery_voltage": 12.6,
+  "charge_state": "bulk",
+  "solar_power": 8,
+  "yield_today": 20
+}
+```
+
+If no valid MQTT data has been received yet, `/api/metrics` returns HTTP `503`:
+
+```json
+{
+  "status": "waiting_for_mqtt_data"
+}
+```
+
+Do not commit real MQTT passwords. Keep local `.env` files and other secrets out of Git.
+
 ## Testing and Logs
 
 Check Mosquitto logs:
