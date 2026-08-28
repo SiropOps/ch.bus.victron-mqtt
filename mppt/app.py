@@ -1,7 +1,9 @@
 import json
 import os
+import queue
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -21,6 +23,7 @@ MQTT_PASSWORD = env("MQTT_PASSWORD", "")
 MQTT_BASE_TOPIC = env("MQTT_BASE_TOPIC", "van/victron").rstrip("/")
 MQTT_STATUS_TOPIC = f"{MQTT_BASE_TOPIC}/status"
 READ_INTERVAL_SECONDS = int(env("READ_INTERVAL_SECONDS", "30"))
+READ_TIMEOUT_SECONDS = int(env("READ_TIMEOUT_SECONDS", "60"))
 
 
 def topic_safe(value: str) -> str:
@@ -59,6 +62,46 @@ def publish_device(client: mqtt.Client, data: dict) -> None:
     print(message, flush=True)
 
 
+def read_process_line(process: subprocess.Popen, timeout: float) -> str:
+    """Read one line without letting a silent child process block forever."""
+    lines: queue.Queue[str | BaseException | None] = queue.Queue()
+
+    def read_stdout() -> None:
+        try:
+            line = process.stdout.readline()
+            lines.put(line if line else None)
+        except BaseException as exc:
+            lines.put(exc)
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+
+    try:
+        result = lines.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise TimeoutError(
+            f"No Victron output received within {READ_TIMEOUT_SECONDS} seconds"
+        ) from exc
+
+    if isinstance(result, BaseException):
+        raise result
+    if result is None:
+        return_code = process.poll()
+        raise RuntimeError(f"victron-ble exited before producing data (code {return_code})")
+    return result
+
+
+def stop_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def read_victron_once(client: mqtt.Client) -> None:
     if not VICTRON_DEVICES:
         raise RuntimeError("VICTRON_DEVICES is empty. Example: E1:EA:0C:89:CC:C5@your_key")
@@ -73,14 +116,17 @@ def read_victron_once(client: mqtt.Client) -> None:
         bufsize=1,
     )
 
-    start = time.time()
+    deadline = time.monotonic() + READ_TIMEOUT_SECONDS
 
     try:
-        while time.time() - start < 60:
-            line = process.stdout.readline()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"No Victron JSON received within {READ_TIMEOUT_SECONDS} seconds"
+                )
 
-            if not line:
-                continue
+            line = read_process_line(process, remaining)
 
             line = line.strip()
 
@@ -90,14 +136,8 @@ def read_victron_once(client: mqtt.Client) -> None:
             publish_device(client, json.loads(line))
             return
 
-        raise TimeoutError("No Victron JSON received within 60 seconds")
-
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        stop_process(process)
 
 
 def on_connect(client: mqtt.Client, userdata, flags, reason_code, properties) -> None:
@@ -123,6 +163,7 @@ def main() -> None:
     print(f"MQTT: {MQTT_HOST}:{MQTT_PORT}", flush=True)
     print(f"Topic base: {MQTT_BASE_TOPIC}", flush=True)
     print(f"Devices: {', '.join([d.split('@')[0] for d in VICTRON_DEVICES])}", flush=True)
+    print(f"Read timeout: {READ_TIMEOUT_SECONDS}s", flush=True)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
