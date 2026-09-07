@@ -3,3 +3,7 @@
 *.env
 docker/mosquitto/config/passwords
 /.pydevproject
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
