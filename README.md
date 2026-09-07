@@ -31,11 +31,10 @@ van/victron/<model>
 ```
 
 Device names can be fixed by a MAC-to-name `VICTRON_NAMES` mapping in the gateway.
-Its `MQTT_VICTRON_BASE_TOPIC` can retain an older topic root. The API's application
-default remains `van/victron-mppt/smartsolar_pyleas` for existing deployments;
-set `MQTT_TOPIC=van/victron/smartsolar_pyleas` when using the current topic family.
-The API still exposes the same six SmartSolar metrics. Other devices remain
-available through their existing MQTT topics.
+Its `MQTT_VICTRON_BASE_TOPIC` can retain an older topic root. The API discovers
+the full JSON device topics below `van/victron/+`, or subscribes only to the names
+listed in `MQTT_DEVICES`. Scalar topics such as
+`van/victron/<device>/<metric>` are deliberately not subscribed.
 
 Use `van/bluetooth/status` for the gateway's retained status and Last Will, and
 `van/bluetooth/health` for scanner health. `van/victron/status` remains a lifecycle
@@ -91,15 +90,21 @@ The compose file publishes host port `1883` so host-networked containers and LAN
 
 ## Victron Metrics API
 
-`ch.bus.bluetooth-mqtt` publishes Victron telemetry to MQTT. The lightweight API service subscribes to one full JSON topic and exposes the latest values over HTTP on port `8013`.
+`ch.bus.bluetooth-mqtt` publishes Victron telemetry to MQTT. The lightweight API
+service discovers the full JSON device topics and exposes the latest value of each
+device over HTTP on port `8013`.
 
 This is useful for Inkplate, dashboards, scripts, or other devices that prefer HTTP JSON instead of MQTT.
 
-For compatibility with existing API deployments, its application default remains the legacy topic `van/victron-mppt/smartsolar_pyleas`. New deployments should explicitly configure:
+By default, the API subscribes to `van/victron/+`. To restrict it to the three
+known devices, pass only their names, separated by commas:
 
 ```text
-van/victron/smartsolar_pyleas
+MQTT_DEVICES=smartsolar_pyleas,batteryprotec_pyleas,ve_direct_pyleas
 ```
+
+`MQTT_BASE_TOPIC` defaults to `van/victron`. The obsolete single-topic
+`MQTT_TOPIC=van/victron-mppt/smartsolar_pyleas` setting is no longer needed.
 
 It exposes:
 
@@ -125,7 +130,8 @@ docker run -d \
   -e MQTT_PORT="1883" \
   -e MQTT_USERNAME="victron" \
   -e MQTT_PASSWORD="CHANGE_ME_MQTT_PASSWORD" \
-  -e MQTT_TOPIC="van/victron/smartsolar_pyleas" \
+  -e MQTT_BASE_TOPIC="van/victron" \
+  -e MQTT_DEVICES="smartsolar_pyleas,batteryprotec_pyleas,ve_direct_pyleas" \
   -e API_PORT="8012" \
   ch.bus.victron-mqtt/api:latest
 ```
@@ -148,26 +154,53 @@ Expected health response:
 {
   "status": "ok",
   "mqtt_connected": true,
-  "last_message_timestamp": "2026-05-22T08:32:11.912940+00:00"
+  "subscribed_topics": [
+    "van/victron/smartsolar_pyleas",
+    "van/victron/batteryprotec_pyleas",
+    "van/victron/ve_direct_pyleas"
+  ],
+  "last_message_timestamps": {
+    "smartsolar_pyleas": "2026-09-07T13:21:25.712026+00:00",
+    "batteryprotec_pyleas": "2026-09-07T13:21:25.706156+00:00",
+    "ve_direct_pyleas": "2026-09-07T13:21:25.710403+00:00"
+  }
 }
 ```
 
-Test metrics:
+Test all configured/discovered metrics:
 
 ```sh
 curl http://127.0.0.1:8012/api/metrics
 ```
 
-Expected metrics response:
+Select the same three devices explicitly (the singular `name` alias is also
+accepted):
+
+```sh
+curl 'http://127.0.0.1:8012/api/metrics?names=smartsolar_pyleas,batteryprotec_pyleas,ve_direct_pyleas'
+```
+
+The response is keyed by the configured device name and retains all fields from
+the gateway payload:
 
 ```json
 {
-  "timestamp": "2026-05-22T08:32:11.912940+00:00",
-  "battery_charging_current": 0.6,
-  "battery_voltage": 12.6,
-  "charge_state": "bulk",
-  "solar_power": 8,
-  "yield_today": 20
+  "smartsolar_pyleas": {
+    "timestamp": "2026-09-07T13:21:25.712026+00:00",
+    "name": "smartsolar_pyleas",
+    "battery_voltage": 13.35,
+    "solar_power": 69
+  },
+  "batteryprotec_pyleas": {
+    "timestamp": "2026-09-07T13:21:25.706156+00:00",
+    "name": "batteryprotec_pyleas",
+    "input_voltage": 13.28
+  },
+  "ve_direct_pyleas": {
+    "timestamp": "2026-09-07T13:21:25.710403+00:00",
+    "name": "ve_direct_pyleas",
+    "battery_voltage": 13.29
+  }
 }
 ```
 
@@ -175,9 +208,14 @@ If no valid MQTT data has been received yet, `/api/metrics` returns HTTP `503`:
 
 ```json
 {
-  "status": "waiting_for_mqtt_data"
+  "status": "waiting_for_mqtt_data",
+  "missing": ["ve_direct_pyleas"]
 }
 ```
+
+The API never lets an older retained MQTT payload replace a newer reading for
+the same device. `/api/health` reports the subscribed topics and the last
+timestamp held for every device, which makes a stale retained value visible.
 
 Do not commit real MQTT passwords. Keep local `.env` files and other secrets out of Git.
 
