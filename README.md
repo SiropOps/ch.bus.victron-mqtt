@@ -1,8 +1,8 @@
 # ch.bus.victron-mqtt
 
-Docker-based Victron BLE to MQTT bridge for a Raspberry Pi van setup.
+Docker-based, multi-device Victron BLE to MQTT bridge for a Raspberry Pi van setup.
 
-The MPPT service reads Victron Instant Readout BLE advertisements with the `victron-ble` CLI and publishes telemetry to a Mosquitto MQTT broker using `paho-mqtt`.
+The bridge reads Victron Instant Readout BLE advertisements from chargers, inverters, BatteryProtect devices, and other devices supported by `victron-ble`. It publishes their telemetry to a Mosquitto MQTT broker using `paho-mqtt`.
 
 ## Architecture
 
@@ -73,7 +73,7 @@ docker compose up -d
 
 The compose file publishes host port `1883` so host-networked containers and LAN clients can reach the broker. If every MQTT client is attached only to `van-mqtt-net`, you can remove the `ports` section and use the broker name `van-mqtt` from containers on that network.
 
-## Build the MPPT Image
+## Build the Victron BLE Image
 
 Run from the repository root:
 
@@ -81,29 +81,33 @@ Run from the repository root:
 docker build -t ch.bus.victron-mqtt/mppt:latest ./mppt
 ```
 
-## Run MPPT on the Raspberry Pi
+## Run the Victron BLE Bridge on the Raspberry Pi
 
 BLE scanning usually requires host networking and privileged access to Bluetooth/DBus on Raspberry Pi. This is why the container uses `--net=host`, `--privileged`, and the `/var/run/dbus` mount.
 
-Important limitation: Docker host networking does not behave like a normal bridge network. If `--net=host` is used, the `--network van-mqtt-net` option may not be effective at runtime. In that case, set `MQTT_HOST` to `127.0.0.1` when Mosquitto publishes port `1883` on the same Raspberry Pi, or use the Raspberry Pi host IP address.
+The BLE bridge uses only host networking. Do not combine `--net=host` with `--network van-mqtt-net`. Set `MQTT_HOST` to `127.0.0.1` when Mosquitto publishes port `1883` on the same Raspberry Pi, or use the Raspberry Pi host IP address for a remote broker.
+
+Configure every device in one comma-separated `VICTRON_DEVICES` value. Each entry has the format `MAC@ENCRYPTION_KEY`. Keep the real keys only in environment variables or a local environment file, and never commit them.
 
 ```sh
 docker run -d \
   --restart=always \
-  --name victron-mppt \
-  --network van-mqtt-net \
-  --privileged \
+  --name victron-ble \
   --net=host \
+  --privileged \
   -v /var/run/dbus:/var/run/dbus \
-  -e VICTRON_DEVICES="E1:EA:0C:89:CC:C5@CHANGE_ME_ENCRYPTION_KEY" \
+  -e VICTRON_DEVICES="MAC1@KEY1,MAC2@KEY2,MAC3@KEY3" \
   -e MQTT_HOST="127.0.0.1" \
   -e MQTT_PORT="1883" \
   -e MQTT_USERNAME="victron" \
   -e MQTT_PASSWORD="CHANGE_ME_MQTT_PASSWORD" \
   -e MQTT_BASE_TOPIC="van/victron" \
   -e READ_INTERVAL_SECONDS="30" \
+  -e READ_TIMEOUT_SECONDS="60" \
   ch.bus.victron-mqtt/mppt:latest
 ```
+
+One read cycle starts one `victron-ble read` process for all configured devices. Telemetry is published as it arrives, and the cycle ends after every configured MAC has been seen or after `READ_TIMEOUT_SECONDS`. A missing device is reported and retried during the next cycle without stopping the container.
 
 ## Safer Remote MQTT Example
 
@@ -112,23 +116,32 @@ Use this when Mosquitto runs on another host, such as `192.168.8.200`:
 ```sh
 docker run -d \
   --restart=always \
-  --name victron-mppt \
+  --name victron-ble \
   --net=host \
   --privileged \
   -v /var/run/dbus:/var/run/dbus \
-  -e VICTRON_DEVICES="E1:EA:0C:89:CC:C5@CHANGE_ME_ENCRYPTION_KEY" \
+  -e VICTRON_DEVICES="MAC1@KEY1,MAC2@KEY2,MAC3@KEY3" \
   -e MQTT_HOST="192.168.8.200" \
   -e MQTT_PORT="1883" \
   -e MQTT_USERNAME="victron" \
   -e MQTT_PASSWORD="CHANGE_ME_MQTT_PASSWORD" \
   -e MQTT_BASE_TOPIC="van/victron" \
   -e READ_INTERVAL_SECONDS="30" \
+  -e READ_TIMEOUT_SECONDS="60" \
   ch.bus.victron-mqtt/mppt:latest
 ```
 
 ## MQTT Topics
 
-Telemetry is published retained under `van/victron/<device>` and `van/victron/<model>`. Simple scalar values are also published under `van/victron/<device>/<field>`.
+Telemetry is published retained under `van/victron/<device-name>` and `van/victron/<model-name>`. Names are normalized to lowercase MQTT-safe identifiers. Every scalar payload value is also published under `van/victron/<device-name>/<field>`.
+
+For example, devices named `SmartSolar Pyleas`, `VE.Direct Pyleas`, and `BatteryProtec Pyleas` publish their full JSON documents under:
+
+```text
+van/victron/smartsolar_pyleas
+van/victron/ve_direct_pyleas
+van/victron/batteryprotec_pyleas
+```
 
 The bridge publishes a retained status topic:
 
@@ -140,14 +153,14 @@ Payloads are `online` and `offline`.
 
 ## Victron Metrics API
 
-The MPPT bridge publishes Victron telemetry to MQTT. The lightweight API service subscribes to the full JSON MPPT topic and exposes the latest values over HTTP on port `8013`.
+The Victron BLE bridge publishes telemetry to MQTT. The lightweight API service subscribes to one full JSON topic and exposes the latest values over HTTP on port `8013`.
 
 This is useful for Inkplate, dashboards, scripts, or other devices that prefer HTTP JSON instead of MQTT.
 
-By default, the API subscribes to:
+For compatibility with existing API deployments, its application default remains the legacy topic `van/victron-mppt/smartsolar_pyleas`. New deployments should explicitly configure:
 
 ```text
-van/victron-mppt/smartsolar_pyleas
+van/victron/smartsolar_pyleas
 ```
 
 It exposes:
@@ -174,7 +187,7 @@ docker run -d \
   -e MQTT_PORT="1883" \
   -e MQTT_USERNAME="victron" \
   -e MQTT_PASSWORD="CHANGE_ME_MQTT_PASSWORD" \
-  -e MQTT_TOPIC="van/victron-mppt/smartsolar_pyleas" \
+  -e MQTT_TOPIC="van/victron/smartsolar_pyleas" \
   -e API_PORT="8013" \
   ch.bus.victron-mqtt/api:latest
 ```
@@ -244,10 +257,10 @@ Subscribe to all van topics:
 docker exec -it van-mqtt mosquitto_sub -u victron -P 'CHANGE_ME_MQTT_PASSWORD' -t 'van/#' -v
 ```
 
-Check MPPT logs:
+Check Victron BLE bridge logs:
 
 ```sh
-docker logs -f victron-mppt
+docker logs -f victron-ble
 ```
 
 Test Victron discovery manually:
